@@ -15,6 +15,7 @@ GEMINI_MODEL_ID = os.getenv("DOUBLECHECK_GEMINI_MODEL", "models/gemini-3-pro-pre
 SONNET_MODEL_ID = os.getenv("DOUBLECHECK_SONNET_MODEL", "claude-sonnet-4-5-20250929")
 CONTEXT_MAX_CHARS = 6000  # ~1500 tokens (4 chars/token) to keep prompts bounded
 PLAN_MAX_CHARS = 6000
+FILE_CONTEXT_MAX_CHARS = 12000  # Allow more room for the file under edit without blowing up the prompt
 
 
 def _require_env(var: str) -> str:
@@ -56,6 +57,14 @@ def _prepare_context(raw: str) -> tuple[str, bool]:
     return _prepare_text(raw, CONTEXT_MAX_CHARS)
 
 
+def _prepare_file_text(raw: str) -> tuple[str, bool]:
+    """
+    Normalize/truncate file content without splitting multibyte characters.
+    Returns (text, was_truncated).
+    """
+    return _prepare_text(raw, FILE_CONTEXT_MAX_CHARS)
+
+
 def _format_plan_prompt(
     plan_description: str, expectations: Optional[str], context: Optional[str]
 ) -> str:
@@ -91,6 +100,57 @@ def _format_plan_prompt(
     return "\n".join(sections).strip()
 
 
+def _format_edit_plan_prompt(
+    plan_description: str,
+    expectations: Optional[str],
+    file_path: Optional[str],
+    file_contents: str,
+    context: Optional[str],
+) -> str:
+    trimmed_plan, plan_truncated = _prepare_text(plan_description, PLAN_MAX_CHARS)
+    trimmed_file, file_truncated = _prepare_file_text(file_contents)
+
+    sections: list[str] = [
+        "Act as a Principal Staff Engineer.",
+        "Review this edit implementation plan for missing steps, incorrect assumptions, security risks, and edge cases.",
+        "The file under edit is provided below; consider it when reviewing the plan.",
+        "Respond concisely with bullet points of issues/improvements and a final line: Verdict: [APPROVED] or Verdict: [CHANGES REQUESTED].",
+        "",
+    ]
+
+    if expectations and expectations.strip():
+        sections.append("Specific concerns or constraints to keep in mind:")
+        sections.append(html.escape(expectations.strip()))
+        sections.append("")
+
+    if context and context.strip():
+        prepared_context, context_truncated = _prepare_context(context)
+        sections.append("Additional context (delimited to avoid mixing with instructions):")
+        sections.append("<context>")
+        sections.append(html.escape(prepared_context))
+        sections.append("</context>")
+        if context_truncated:
+            sections.append(f"(Context truncated to {CONTEXT_MAX_CHARS} characters.)")
+        sections.append("")
+
+    file_label = file_path.strip() if file_path and file_path.strip() else "(unspecified file path)"
+    sections.append("File under edit:")
+    sections.append(html.escape(file_label))
+    sections.append("<file_content>")
+    sections.append(html.escape(trimmed_file))
+    sections.append("</file_content>")
+    if file_truncated:
+        sections.append(f"(File content truncated to {FILE_CONTEXT_MAX_CHARS} characters.)")
+    sections.append("")
+
+    sections.append("Plan:")
+    sections.append(html.escape(trimmed_plan))
+    if plan_truncated:
+        sections.append(f"(Plan truncated to {PLAN_MAX_CHARS} characters.)")
+
+    return "\n".join(sections).strip()
+
+
 @mcp.tool()
 async def gemini_plan_check(
     plan_description: str, expectations: Optional[str] = None, context: Optional[str] = None
@@ -104,6 +164,33 @@ async def gemini_plan_check(
     try:
         model = _build_gemini_model()
         prompt = _format_plan_prompt(plan_description, expectations, context)
+        response = await model.generate_content_async(prompt)
+        if response is None or not getattr(response, "text", None):
+            return "Error: Gemini returned an empty or blocked response."
+        return response.text
+    except Exception as exc:  # pylint: disable=broad-except
+        return f"Error calling Gemini ({type(exc).__name__})."
+
+
+@mcp.tool()
+async def gemini_edit_plan_check(
+    plan_description: str,
+    file_contents: str,
+    file_path: Optional[str] = None,
+    expectations: Optional[str] = None,
+    context: Optional[str] = None,
+) -> str:
+    """
+    Ask Gemini 3 Pro to critique an edit plan and include the target file contents.
+    """
+    if not plan_description.strip():
+        return "Error: plan_description is empty."
+    if not file_contents.strip():
+        return "Error: file_contents is empty."
+
+    try:
+        model = _build_gemini_model()
+        prompt = _format_edit_plan_prompt(plan_description, expectations, file_path, file_contents, context)
         response = await model.generate_content_async(prompt)
         if response is None or not getattr(response, "text", None):
             return "Error: Gemini returned an empty or blocked response."

@@ -18,6 +18,7 @@
 ## Tools
 
 - `gemini_plan_check(plan_description, expectations=None, context=None)` — plan critique sent to Google’s Gemini model (default `models/gemini-3-pro-preview`). Optional `context` is wrapped in `<context>` delimiters and truncated to ~6000 characters to keep the plan and metadata distinct.
+- `gemini_edit_plan_check(plan_description, file_contents, file_path=None, expectations=None, context=None)` — like `gemini_plan_check`, but includes the target file content (truncated) and optional path in the prompt so edit plans can be reviewed with the live file context.
 - `sonnet_code_review(code_snippet, context=None)` — code review sent to Anthropic’s Claude Sonnet model (default `claude-sonnet-4-5-20250929`).
 
 ## Notes
