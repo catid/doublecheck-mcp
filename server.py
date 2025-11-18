@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 from textwrap import dedent
 from typing import Optional
@@ -10,8 +11,10 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("DoubleCheck")
 
-GEMINI_MODEL_ID = os.getenv("DOUBLECHECK_GEMINI_MODEL", "gemini-3.0-pro-preview")
-SONNET_MODEL_ID = os.getenv("DOUBLECHECK_SONNET_MODEL", "claude-sonnet-4.5")
+GEMINI_MODEL_ID = os.getenv("DOUBLECHECK_GEMINI_MODEL", "models/gemini-3-pro-preview")
+SONNET_MODEL_ID = os.getenv("DOUBLECHECK_SONNET_MODEL", "claude-sonnet-4-5-20250929")
+CONTEXT_MAX_CHARS = 6000  # ~1500 tokens (4 chars/token) to keep prompts bounded
+PLAN_MAX_CHARS = 6000
 
 
 def _require_env(var: str) -> str:
@@ -32,28 +35,66 @@ def _build_anthropic_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
-def _format_plan_prompt(plan_description: str, expectations: Optional[str]) -> str:
-    if expectations:
-        expectations_block = f"Specific concerns or constraints to keep in mind:\n{expectations.strip()}\n\n"
-    else:
-        expectations_block = ""
-    return dedent(
-        f"""
-        Act as a Principal Staff Engineer.
+def _prepare_text(raw: str, max_chars: int) -> tuple[str, bool]:
+    """
+    Normalize/truncate text without splitting multibyte characters. Returns (text, was_truncated).
+    """
+    cleaned = raw.strip()
+    if not cleaned:
+        return "", False
+    if len(cleaned) <= max_chars:
+        return cleaned, False
+    truncated = cleaned[:max_chars]
+    return truncated, True
 
-        Review the implementation plan below for missing steps, incorrect assumptions, security risks, and edge cases.
-        Respond concisely with:
-        - Bullet points of any issues or improvements
-        - A final verdict line in the form: Verdict: [APPROVED] or Verdict: [CHANGES REQUESTED]
 
-        {expectations_block}Plan:
-        {plan_description.strip()}
-        """
-    ).strip()
+def _prepare_context(raw: str) -> tuple[str, bool]:
+    """
+    Normalize/truncate context without splitting multibyte characters.
+    Returns (text, was_truncated).
+    """
+    return _prepare_text(raw, CONTEXT_MAX_CHARS)
+
+
+def _format_plan_prompt(
+    plan_description: str, expectations: Optional[str], context: Optional[str]
+) -> str:
+    trimmed_plan, plan_truncated = _prepare_text(plan_description, PLAN_MAX_CHARS)
+
+    sections: list[str] = [
+        "Act as a Principal Staff Engineer.",
+        "Review the implementation plan for missing steps, incorrect assumptions, security risks, and edge cases.",
+        "Respond concisely with bullet points of issues/improvements and a final line: Verdict: [APPROVED] or Verdict: [CHANGES REQUESTED].",
+        "",
+    ]
+
+    if expectations and expectations.strip():
+        sections.append("Specific concerns or constraints to keep in mind:")
+        sections.append(html.escape(expectations.strip()))
+        sections.append("")
+
+    if context and context.strip():
+        prepared_context, context_truncated = _prepare_context(context)
+        sections.append("Context (delimited to avoid mixing with instructions):")
+        sections.append("<context>")
+        sections.append(html.escape(prepared_context))
+        sections.append("</context>")
+        if context_truncated:
+            sections.append(f"(Context truncated to {CONTEXT_MAX_CHARS} characters.)")
+        sections.append("")
+
+    sections.append("Plan:")
+    sections.append(html.escape(trimmed_plan))
+    if plan_truncated:
+        sections.append(f"(Plan truncated to {PLAN_MAX_CHARS} characters.)")
+
+    return "\n".join(sections).strip()
 
 
 @mcp.tool()
-async def gemini_plan_check(plan_description: str, expectations: Optional[str] = None) -> str:
+async def gemini_plan_check(
+    plan_description: str, expectations: Optional[str] = None, context: Optional[str] = None
+) -> str:
     """
     Ask Gemini 3 Pro to critique a plan for correctness, risks, and gaps.
     """
@@ -62,11 +103,13 @@ async def gemini_plan_check(plan_description: str, expectations: Optional[str] =
 
     try:
         model = _build_gemini_model()
-        prompt = _format_plan_prompt(plan_description, expectations)
+        prompt = _format_plan_prompt(plan_description, expectations, context)
         response = await model.generate_content_async(prompt)
-        return response.text or "Gemini returned an empty response."
+        if response is None or not getattr(response, "text", None):
+            return "Error: Gemini returned an empty or blocked response."
+        return response.text
     except Exception as exc:  # pylint: disable=broad-except
-        return f"Error calling Gemini: {exc}"
+        return f"Error calling Gemini ({type(exc).__name__})."
 
 
 def _build_sonnet_request(code_snippet: str, context: Optional[str]) -> list[dict]:
