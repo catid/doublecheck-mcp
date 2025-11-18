@@ -28,3 +28,11 @@
 - Setup script targets a Unix shell; on Windows use WSL or mirror the steps manually (`uv sync`, create `.env`, update `~/.codex/config.toml`).
 - Keep `.env` private (already ignored by git). Lock it down with `chmod 600 .env`.
 - The server keeps no state on disk; it just forwards requests to the hosted models. Ensure you’re comfortable sending the provided code/plans to Google and Anthropic. You can copy `AGENTS.md` anywhere because it relies on the absolute MCP entry written to `~/.codex/config.toml`.
+
+Consider editing your ~/.codex/config.toml to add:
+
+```code
+[tools]
+web_search = true
+```
+
