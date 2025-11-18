@@ -32,7 +32,7 @@
 Consider editing your ~/.codex/config.toml to add:
 
 ```code
-[tools]
-web_search = true
+[features]
+web_search_request = true
 ```
 
