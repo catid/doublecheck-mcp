@@ -1,0 +1,17 @@
+[project]
+name = "doublecheck-mcp"
+version = "0.1.0"
+description = "MCP server that proxies Gemini 3 Pro for plan checks and Claude Sonnet 4.5 for code review."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40",
+    "google-generativeai>=0.8.3",
+    "mcp>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your/repo"
+
+[tool.uv]
+package = true
